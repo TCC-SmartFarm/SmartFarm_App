@@ -54,3 +54,17 @@ Join our community of developers creating universal apps.
 
 - [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
 - [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+
+
+
+
+
+
+
+
+
+
+
+smartfarm://dev-wc5l2gt5dt84h8lu.us.auth0.com/ios/com.maua.smartfarm/callback,
+smartfarm://dev-wc5l2gt5dt84h8lu.us.auth0.com/android/com.maua.smartfarm/callback
+dev-wc5l2gt5dt84h8lu.us.auth0.com

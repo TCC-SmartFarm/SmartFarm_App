@@ -8,9 +8,11 @@
     "scheme": "smartfarm",
     "userInterfaceStyle": "automatic",
     "ios": {
+      "bundleIdentifier": "br.com.smartfarm.app",
       "icon": "./assets/expo.icon"
     },
     "android": {
+      "package": "br.com.smartfarm.app",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -32,11 +34,26 @@
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 76
         }
-      ]
+      ],
+      [
+        "react-native-auth0",
+        {
+          "domain": "dev-wc5l2gt5dt84h8lu.us.auth0.com",
+          "customScheme": "smartfarm"
+        }
+      ],
+      "expo-secure-store"
     ],
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "9120d64f-ab69-4e6d-a22c-8c7bee439cf0"
+      }
+    },
+    "owner": "smartfarm-app"
   }
 }
