@@ -42,7 +42,9 @@
           "customScheme": "smartfarm"
         }
       ],
-      "expo-secure-store"
+      "expo-secure-store",
+      "react-native-wifi-reborn",
+      "expo-location"
     ],
     "experiments": {
       "typedRoutes": true,

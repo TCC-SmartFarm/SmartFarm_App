@@ -17,12 +17,12 @@ function RootNavigator() {
         animation: "fade",
       }}
     >
-      <Stack.Protected guard={!!user}>
-        <Stack.Screen name="(app)" />
-      </Stack.Protected>
-
       <Stack.Protected guard={!user}>
         <Stack.Screen name="sign-in" />
+      </Stack.Protected>
+
+      <Stack.Protected guard={!!user}>
+        <Stack.Screen name="(app)" />
       </Stack.Protected>
     </Stack>
   );

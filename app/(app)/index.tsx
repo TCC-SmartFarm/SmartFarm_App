@@ -1,19 +1,34 @@
+
+import React from "react";
 import {
   Pressable,
   StyleSheet,
   Text,
+  View,
+  Image,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-
 import { useAuth0 } from "react-native-auth0";
 import { router } from "expo-router";
+
+export const colors = {
+  background: "#F6F5F0",
+  dark: "#1A201C",
+  green: "#4A7C59",
+  greenDark: "#355D42",
+  greenSoft: "#E7EEE7",
+  white: "#FFFFFF",
+  text: "#1A201C",
+  textSecondary: "#6B706B",
+  border: "#E2E0D8",
+};
 
 export default function HomeScreen() {
   const { clearSession } = useAuth0();
 
   async function handleLogout() {
     try {
-      await clearSession();
+      await clearSession({ returnToUrl: `smartfarm://${process.env.EXPO_PUBLIC_AUTH_DOMAIN}/android/br.com.smartfarm.app/callback` });
       router.replace("/sign-in");
     } catch (error) {
       console.error("Erro ao fazer logout:", error);
@@ -22,25 +37,59 @@ export default function HomeScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
-      <Text style={styles.text}>
-        SmartFarm
-      </Text>
+      <View style={styles.content}>
+        
+        {/* Cabeçalho com o Logo em versão reduzida */}
+        <View style={styles.header}>
+          <Image 
+            source={require("../../assets/smartfarm_logo.png")} 
+            style={styles.smallLogo}
+            resizeMode="contain"
+          />
+          <Text style={styles.title}>SmartFarm</Text>
+          <Text style={styles.subtext}>
+            Login realizado com sucesso.
+          </Text>
+        </View>
 
-      <Text style={styles.subtext}>
-        Login realizado com sucesso.
-      </Text>
+        {/* Card Ilustrativo de monitoramento (dashboard placeholder) */}
+        <View style={styles.dashboardCard}>
+          <Text style={styles.cardEmoji}>📊</Text>
+          <Text style={styles.cardTitle}>Nenhum sensor ativo</Text>
+          <Text style={styles.cardDescription}>
+            Inicie a configuração abaixo para receber as métricas do seu campo em tempo real.
+          </Text>
+        </View>
 
-      <Pressable
-        onPress={handleLogout}
-        style={({ pressed }) => [
-          styles.logoutButton,
-          pressed && styles.logoutButtonPressed,
-        ]}
-      >
-        <Text style={styles.logoutText}>
-          Sair da conta
-        </Text>
-      </Pressable>
+        {/* Ações */}
+        <View style={styles.actions}>
+          <Pressable
+            onPress={() => router.push("./sensor")}
+            style={({ pressed }) => [
+              styles.primaryButton,
+              pressed && styles.primaryButtonPressed,
+            ]}
+          >
+            <Text style={styles.primaryButtonText}>
+              Configurar sensor
+            </Text>
+            <Text style={styles.primaryButtonIcon}>→</Text>
+          </Pressable>
+
+          <Pressable
+            onPress={handleLogout}
+            style={({ pressed }) => [
+              styles.secondaryButton,
+              pressed && styles.secondaryButtonPressed,
+            ]}
+          >
+            <Text style={styles.secondaryButtonText}>
+              Sair da conta
+            </Text>
+          </Pressable>
+        </View>
+
+      </View>
     </SafeAreaView>
   );
 }
@@ -48,42 +97,109 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    alignItems: "center",
+    backgroundColor: colors.background,
+  },
+  content: {
+    flex: 1,
+    paddingHorizontal: 32,
     justifyContent: "center",
-    backgroundColor: "#F6F5F0",
   },
-
-  text: {
-    fontSize: 32,
-    fontWeight: "800",
-    color: "#1A201C",
+  header: {
+    alignItems: "center",
+    marginBottom: 32,
   },
-
+  smallLogo: {
+    width: 72,
+    height: 72,
+    marginBottom: 12,
+  },
+  title: {
+    fontSize: 36,
+    fontWeight: "900",
+    color: colors.text,
+    letterSpacing: -1,
+  },
   subtext: {
-    marginTop: 12,
+    marginTop: 6,
+    fontSize: 15,
+    color: colors.textSecondary,
+    textAlign: "center",
+  },
+  
+  // Card de Status
+  dashboardCard: {
+    backgroundColor: colors.greenSoft,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 20,
+    padding: 24,
+    alignItems: "center",
+    marginBottom: 36,
+  },
+  cardEmoji: {
+    fontSize: 32,
+    marginBottom: 8,
+  },
+  cardTitle: {
     fontSize: 16,
-    color: "#6B706B",
+    fontWeight: "700",
+    color: colors.dark,
+    marginBottom: 4,
+  },
+  cardDescription: {
+    fontSize: 13,
+    color: colors.textSecondary,
+    textAlign: "center",
+    lineHeight: 18,
   },
 
-  logoutButton: {
-    marginTop: 40,
-    minWidth: 180,
-    minHeight: 52,
-    paddingHorizontal: 24,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: "#1A201C",
+  // Botões
+  actions: {
+    gap: 12,
+  },
+  primaryButton: {
+    backgroundColor: colors.green,
+    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
+    minHeight: 56,
+    borderRadius: 16,
+    paddingHorizontal: 24,
+    gap: 8,
+    shadowColor: colors.greenDark,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    elevation: 4,
   },
-
-  logoutButtonPressed: {
-    opacity: 0.6,
+  primaryButtonPressed: {
+    backgroundColor: colors.greenDark,
+    transform: [{ scale: 0.98 }],
+    shadowOpacity: 0.05,
   },
-
-  logoutText: {
-    color: "#1A201C",
-    fontSize: 15,
+  primaryButtonText: {
+    color: colors.white,
+    fontSize: 16,
     fontWeight: "700",
+  },
+  primaryButtonIcon: {
+    color: colors.white,
+    fontSize: 18,
+    fontWeight: "600",
+  },
+  secondaryButton: {
+    minHeight: 56,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 16,
+    backgroundColor: "transparent",
+  },
+  secondaryButtonPressed: {
+    backgroundColor: colors.greenSoft,
+  },
+  secondaryButtonText: {
+    color: colors.textSecondary,
+    fontSize: 15,
+    fontWeight: "600",
   },
 });
