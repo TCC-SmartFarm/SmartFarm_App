@@ -45,7 +45,7 @@ export default function HomeScreen() {
         {/* Ações */}
         <View style={styles.actions}>
           <Pressable
-            onPress={() => router.push("./sensor/post")}
+            onPress={() => router.push("./sensor")}
             style={({ pressed }) => [
               styles.primaryButton,
               pressed && styles.primaryButtonPressed,
