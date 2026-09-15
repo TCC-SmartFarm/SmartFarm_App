@@ -33,7 +33,7 @@ export default function SensorButtonScreen() {
 
           <Text style={styles.title}>
             Agora, fique{"\n"}
-            próximo ao sensor.
+            próximo ao sensor na localização onde ele será instalado.
           </Text>
 
           <Text style={styles.description}>

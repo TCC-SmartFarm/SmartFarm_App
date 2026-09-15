@@ -1,11 +1,14 @@
 import { Stack } from "expo-router";
+import { SensorProvider } from "../../src/sensor/SensorContext";
 
 export default function AppLayout() {
   return (
-    <Stack
-      screenOptions={{
-        headerShown: false,
-      }}
-    />
+    <SensorProvider>
+      <Stack
+        screenOptions={{
+          headerShown: false,
+        }}
+      />
+    </SensorProvider>
   );
 }

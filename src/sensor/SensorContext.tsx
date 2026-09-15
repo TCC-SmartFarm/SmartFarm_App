@@ -1,76 +1,69 @@
-import {
+import React, {
   createContext,
   useContext,
-  useMemo,
   useState,
   type ReactNode,
 } from "react";
 
-export type SensorConfig = {
-  sensorId: string;
-  deviceId: string;
+import type { Device } from "./sensor.service";
 
-  /**
-   * Endpoint que será usado posteriormente
-   * para comunicação com o ESP.
-   */
-  endpoint: string;
+type SensorContextType = {
+  devices: Device[];
+  selectedDevice: Device | null;
 
-  /**
-   * Dados que serão enviados posteriormente
-   * para o sensor.
-   */
-  payload: Record<string, unknown>;
+  setDevices: (devices: Device[]) => void;
+  setSelectedDevice: (device: Device | null) => void;
+
+  clearDevices: () => void;
 };
 
-type SensorContextData = {
-  sensorConfig: SensorConfig | null;
-
-  setSensorConfig: (config: SensorConfig) => void;
-
-  clearSensorConfig: () => void;
-};
-
-const SensorContext = createContext<SensorContextData | undefined>(
+const SensorContext = createContext<SensorContextType | undefined>(
   undefined
 );
 
-type SensorProviderProps = {
-  children: ReactNode;
-};
-
 export function SensorProvider({
   children,
-}: SensorProviderProps) {
-  const [sensorConfig, setSensorConfig] =
-    useState<SensorConfig | null>(null);
+}: {
+  children: ReactNode;
+}) {
+  const [devices, setDevicesState] = useState<Device[]>([]);
+  const [selectedDevice, setSelectedDeviceState] =
+    useState<Device | null>(null);
 
-  const value = useMemo(
-    () => ({
-      sensorConfig,
+  function setDevices(devices: Device[]) {
+    setDevicesState(devices);
+  }
 
-      setSensorConfig,
+  function setSelectedDevice(device: Device | null) {
+    setSelectedDeviceState(device);
+  }
 
-      clearSensorConfig: () => {
-        setSensorConfig(null);
-      },
-    }),
-    [sensorConfig]
-  );
+  function clearDevices() {
+    setDevicesState([]);
+    setSelectedDeviceState(null);
+  }
 
   return (
-    <SensorContext.Provider value={value}>
+    <SensorContext.Provider
+      value={{
+        devices,
+        selectedDevice,
+        setDevices,
+        setSelectedDevice,
+        clearDevices,
+      }}
+    >
       {children}
     </SensorContext.Provider>
   );
 }
 
-export function useSensor() {
+export function useSensors() {
   const context = useContext(SensorContext);
 
   if (!context) {
     throw new Error(
-      "useSensor deve ser utilizado dentro de SensorProvider"
+      "useSensors deve ser usado dentro de SensorProvider"
     );
   }
 

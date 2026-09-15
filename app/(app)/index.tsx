@@ -10,18 +10,8 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useAuth0 } from "react-native-auth0";
 import { router } from "expo-router";
+import { colors } from "@/theme/colors";
 
-export const colors = {
-  background: "#F6F5F0",
-  dark: "#1A201C",
-  green: "#4A7C59",
-  greenDark: "#355D42",
-  greenSoft: "#E7EEE7",
-  white: "#FFFFFF",
-  text: "#1A201C",
-  textSecondary: "#6B706B",
-  border: "#E2E0D8",
-};
 
 export default function HomeScreen() {
   const { clearSession } = useAuth0();
@@ -52,19 +42,10 @@ export default function HomeScreen() {
           </Text>
         </View>
 
-        {/* Card Ilustrativo de monitoramento (dashboard placeholder) */}
-        <View style={styles.dashboardCard}>
-          <Text style={styles.cardEmoji}>📊</Text>
-          <Text style={styles.cardTitle}>Nenhum sensor ativo</Text>
-          <Text style={styles.cardDescription}>
-            Inicie a configuração abaixo para receber as métricas do seu campo em tempo real.
-          </Text>
-        </View>
-
         {/* Ações */}
         <View style={styles.actions}>
           <Pressable
-            onPress={() => router.push("./sensor")}
+            onPress={() => router.push("./sensor/post")}
             style={({ pressed }) => [
               styles.primaryButton,
               pressed && styles.primaryButtonPressed,
