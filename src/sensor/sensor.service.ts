@@ -8,6 +8,8 @@ export type Device = {
   nwk_s_key: string;
   devAddress: string;
   setup_date: number;
+  lat: number;
+  lon: number;
 };
 
 type UserRow = {

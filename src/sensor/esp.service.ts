@@ -17,7 +17,7 @@ export async function postDeviceToEsp(
   console.log("ESP: enviando configuração para:", url);
 
   const payload = {
-    // devEUI: device.devEUI,
+    devEUI: device.devEUI,
     app_s_key: device.app_s_key,
     nwk_s_key: device.nwk_s_key,
     dev_addr: device.devAddress,

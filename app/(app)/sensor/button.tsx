@@ -1,4 +1,5 @@
 import {
+  ActivityIndicator,
   Pressable,
   StyleSheet,
   Text,
@@ -6,12 +7,101 @@ import {
 } from "react-native";
 
 import { SafeAreaView } from "react-native-safe-area-context";
-
 import { router } from "expo-router";
 
+import * as Location from "expo-location";
+import { useState } from "react";
+
 export default function SensorButtonScreen() {
-  function handleButtonConfirmation() {
-    router.push("./wifi");
+  const [loadingLocation, setLoadingLocation] =
+    useState(false);
+
+  const [locationError, setLocationError] =
+    useState<string | null>(null);
+
+  async function handleButtonConfirmation() {
+    try {
+      setLoadingLocation(true);
+      setLocationError(null);
+
+      console.log(
+        "LOCATION: solicitando permissão..."
+      );
+
+      const permission =
+        await Location.getForegroundPermissionsAsync();
+
+      let granted = permission.granted;
+
+      if (!granted) {
+        const requested =
+          await Location.requestForegroundPermissionsAsync();
+
+        granted = requested.granted;
+      }
+
+      if (!granted) {
+        console.log(
+          "LOCATION: permissão negada"
+        );
+
+        setLocationError(
+          "Precisamos da permissão de localização para continuar."
+        );
+
+        return;
+      }
+
+      console.log(
+        "LOCATION: permissão concedida"
+      );
+
+      const location =
+        await Location.getCurrentPositionAsync({
+          accuracy:
+            Location.Accuracy.Highest,
+        });
+
+      const lat =
+        location.coords.latitude;
+
+      const lon =
+        location.coords.longitude;
+
+      console.log(
+        "LOCATION: lat:",
+        lat
+      );
+
+      console.log(
+        "LOCATION: lon:",
+        lon
+      );
+
+      console.log(
+        "LOCATION: precisão:",
+        location.coords.accuracy,
+        "metros"
+      );
+
+      console.log(
+        "LOCATION: posição completa:",
+        location
+      );
+
+      router.push("/sensor/wifi");
+    } catch (error) {
+      console.error(
+        "LOCATION: erro ao obter localização:",
+        error
+      );
+
+      setLocationError(
+        "Não foi possível obter a localização atual."
+      );
+    } finally {
+      setLoadingLocation(false);
+    }
   }
 
   return (
@@ -20,6 +110,7 @@ export default function SensorButtonScreen() {
         <Pressable
           onPress={() => router.back()}
           style={styles.backButton}
+          disabled={loadingLocation}
         >
           <Text style={styles.backText}>
             ←
@@ -78,23 +169,55 @@ export default function SensorButtonScreen() {
               </Text>
             </View>
           </View>
+
+          {locationError && (
+            <View style={styles.errorCard}>
+              <View style={styles.errorDot} />
+
+              <Text style={styles.errorText}>
+                {locationError}
+              </Text>
+            </View>
+          )}
         </View>
 
         <View>
           <Pressable
-            onPress={handleButtonConfirmation}
+            onPress={
+              handleButtonConfirmation
+            }
+            disabled={loadingLocation}
             style={({ pressed }) => [
               styles.button,
-              pressed && styles.buttonPressed,
+              loadingLocation &&
+                styles.buttonDisabled,
+              pressed &&
+                !loadingLocation &&
+                styles.buttonPressed,
             ]}
           >
-            <Text style={styles.buttonText}>
-              Já apertei o botão
-            </Text>
+            {loadingLocation ? (
+              <>
+                <ActivityIndicator
+                  color="#FFFFFF"
+                  size="small"
+                />
 
-            <Text style={styles.buttonArrow}>
-              →
-            </Text>
+                <Text style={styles.buttonText}>
+                  Obtendo localização...
+                </Text>
+              </>
+            ) : (
+              <>
+                <Text style={styles.buttonText}>
+                  Já apertei o botão
+                </Text>
+
+                <Text style={styles.buttonArrow}>
+                  →
+                </Text>
+              </>
+            )}
           </Pressable>
         </View>
       </View>
@@ -195,6 +318,33 @@ const styles = StyleSheet.create({
     lineHeight: 19,
   },
 
+  errorCard: {
+    marginTop: 18,
+    padding: 14,
+    borderRadius: 16,
+    backgroundColor: "#F5E5E5",
+    borderWidth: 1,
+    borderColor: "#E0C6C6",
+    flexDirection: "row",
+    alignItems: "flex-start",
+  },
+
+  errorDot: {
+    width: 9,
+    height: 9,
+    marginTop: 4,
+    marginRight: 10,
+    borderRadius: 9,
+    backgroundColor: "#A34B4B",
+  },
+
+  errorText: {
+    flex: 1,
+    fontSize: 13,
+    lineHeight: 18,
+    color: "#8A3737",
+  },
+
   button: {
     minHeight: 58,
     paddingHorizontal: 24,
@@ -204,6 +354,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 10,
+  },
+
+  buttonDisabled: {
+    opacity: 0.65,
   },
 
   buttonPressed: {

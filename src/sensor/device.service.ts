@@ -8,6 +8,8 @@ type DeviceData = {
   nwk_s_key: string;
   devAddress: string;
   setup_date: number;
+  lat: number;
+  lon: number;
 };
 
 type UserRow = {
@@ -134,6 +136,8 @@ export async function updateDevice(
       nwk_s_key: device.nwk_s_key,
       devAddress: device.devAddress,
       setup_date: device.setup_date,
+      lat: device.lat,
+      lon: device.lon,
     },
   };
 

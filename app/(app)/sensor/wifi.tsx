@@ -478,7 +478,7 @@ export default function SensorWifiScreen() {
           </View>
           {connectedSSID && (
             <Pressable
-              onPress={() => router.push("./sensor/post")}
+              onPress={() => router.push("/sensor/post")}
               style={styles.button}
             >
               <Text style={styles.buttonText}>
