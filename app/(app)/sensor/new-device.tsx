@@ -99,6 +99,8 @@ export default function CreateSensorScreen() {
 
           // Sensor recém-cadastrado ainda não foi configurado
           setup_date: 0,
+          lat: 0,
+          lon: 0
         },
       });
 

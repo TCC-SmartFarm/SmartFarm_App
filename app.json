@@ -46,7 +46,8 @@
       "react-native-wifi-reborn",
       "expo-location",
       "expo-image",
-      "expo-web-browser"
+      "expo-web-browser",
+      "@maplibre/maplibre-react-native"
     ],
     "experiments": {
       "typedRoutes": true,

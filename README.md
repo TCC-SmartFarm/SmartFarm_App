@@ -23,7 +23,7 @@ Confirmação do botão físico
   ↓
 Captura da localização
   ↓
-Conexão à rede esp_...
+Conexão à rede DATALOGGER...
   ↓
 Envio da configuração para o sensor
   ↓
@@ -157,17 +157,17 @@ Esses dados fazem parte das informações temporárias da configuração e devem
 
 ## Wi-Fi do sensor
 
-O sensor cria uma rede Wi-Fi cujo SSID começa com `esp_`.
+O sensor cria uma rede Wi-Fi cujo SSID começa com `DATA`.
 
 ### Android
 
 No Android, o aplicativo procura redes próximas usando `react-native-wifi-reborn`. A busca exige permissão de localização para realizar o scan.
 
-Somente redes cujo SSID começa com `esp_` são apresentadas ao usuário.
+Somente redes cujo SSID começa com `DATA` são apresentadas ao usuário.
 
 ### iOS
 
-No iOS, o fluxo é manual: o usuário abre os ajustes de Wi-Fi, conecta-se à rede `esp_...` e retorna ao aplicativo. Ao tocar em `Já estou conectado`, o app verifica o SSID atual.
+No iOS, o fluxo é manual: o usuário abre os ajustes de Wi-Fi, conecta-se à rede `DATA...` e retorna ao aplicativo. Ao tocar em `Já estou conectado`, o app verifica o SSID atual.
 
 ## Envio para o sensor
 

@@ -44,6 +44,7 @@ export default function HomeScreen() {
 
         {/* Ações */}
         <View style={styles.actions}>
+
           <Pressable
             onPress={() => router.push("./sensor")}
             style={({ pressed }) => [
@@ -55,6 +56,18 @@ export default function HomeScreen() {
               Configurar sensor
             </Text>
             <Text style={styles.primaryButtonIcon}>→</Text>
+          </Pressable>
+          <Pressable
+            onPress={() => router.push("./dashboard")}
+            style={({ pressed }) => [
+              styles.primaryButton,
+              pressed && styles.primaryButtonPressed,
+            ]}
+          >
+            <Text style={styles.primaryButtonText}>
+              Meus Sensores
+            </Text>
+            {/* <Text style={styles.primaryButtonIcon}>→</Text> */}
           </Pressable>
 
           <Pressable
