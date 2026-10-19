@@ -30,8 +30,7 @@ import { updateDevice } from "../../../src/sensor/device.service";
 import { saveDevices } from "../../../src/sensor/sensor.storage";
 
 const ESP_SSID = "DATALOGGER_CONFIG";
-const ESP_CONFIG_PATH =
-  process.env.EXPO_PUBLIC_ESP_CONFIG_PATH || "/api/config";
+const ESP_CONFIG_PATH = process.env.EXPO_PUBLIC_ESP_CONFIG_PATH || "/api/config";
 
 export default function SensorWifiScreen() {
   const { user } = useAuth0();
