@@ -483,8 +483,17 @@ export default function DashboardScreen() {
             );
           })}
         </View>
+        {/* IRRIGAÇÃO*/}
+        <Pressable
+          style={styles.addButton}
+          onPress={() => router.push("/dashboard/components/irrigationPage")}
+        >
+          <Text style={styles.addButtonText}>
+            IRRIGAÇÃO
+          </Text>
+        </Pressable>
 
-        {/* NOVO SENSOR */}
+        {/* NOVO SENSOR
         <Pressable
           style={styles.addButton}
           onPress={() => router.push("/sensor")}
@@ -492,7 +501,7 @@ export default function DashboardScreen() {
           <Text style={styles.addButtonText}>
             Configurar novo sensor
           </Text>
-        </Pressable>
+        </Pressable> */}
       </ScrollView>
       </View>
     </View>
