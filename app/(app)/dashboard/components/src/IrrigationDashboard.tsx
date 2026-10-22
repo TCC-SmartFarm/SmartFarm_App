@@ -15,16 +15,24 @@ import { fetchIrrigation, loadUserDevices } from "./irrigationApi";
 import type { ForecastDay, IrrigationDevice, IrrigationResponse, SoilStatus } from "./types";
 import IrrigationTrendChart from "./IrrigationTrendChart";
 import { fetchSensorHistory, type SensorHistoryPoint } from "./sensorHistoryApi";
+import { router } from "expo-router";
 
 export { colors } from "./colors";
-export type { ForecastDay, IrrigationDevice, IrrigationResponse } from "./types";
+export type {
+  ForecastDay,
+  IrrigationDevice,
+  IrrigationResponse,
+  MSSSensorHistoryPoint,
+  SoilMoisturePrediction,
+  SoilMoisturePredictionPoint,
+} from "./types";
 
 export interface IrrigationDashboardProps {
   /** User ID from the active useAuth session (e.g. Auth0 `user.sub`). */
   userId?: string | null;
   /** Your existing Supabase JS client. */
   supabase: SupabaseClient;
-  /** Base URL only, e.g. http://localhost:8456 (do not include the route). */
+  /** Base URL only (do not include the route). */
   apiBaseUrl: string;
   /** Must match the profile table used by the irrigation API. */
   profileTable?: string;
@@ -37,10 +45,6 @@ export interface IrrigationDashboardProps {
   sensorApiBaseUrl?: string;
   /** Number of days requested from the sensor history endpoint. */
   historyDays?: number;
-  /** Should match KALMAN_PROCESS_NOISE in the Go service .env. */
-  kalmanProcessNoise?: number;
-  /** Should match KALMAN_MEASUREMENT_NOISE in the Go service .env. */
-  kalmanMeasurementNoise?: number;
 }
 
 type Tone = "green" | "amber" | "neutral";
@@ -57,6 +61,20 @@ function formatPercent(value: number | null | undefined): string {
   return value === null || value === undefined || !Number.isFinite(Number(value))
     ? "—"
     : `${formatNumber(value, 1)}%`;
+}
+
+function formatSoilScale(value: number | null | undefined, unit: string | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) return "—";
+  const formatted = formatNumber(value, 1);
+  return unit === "%" || unit?.toLowerCase() === "percent" || unit?.toLowerCase() === "percentage"
+    ? `${formatted}%`
+    : formatted;
+}
+
+function soilScaleDescription(unit: string | undefined): string {
+  return unit === "%" || unit?.toLowerCase() === "percent" || unit?.toLowerCase() === "percentage"
+    ? "Escala percentual"
+    : "Escala numérica do sensor; não equivale necessariamente à umidade volumétrica";
 }
 
 function formatDay(date: string): { weekday: string; date: string } {
@@ -102,16 +120,26 @@ function soilTone(status: SoilStatus | undefined): Tone {
 }
 
 function recommendationTitle(data: IrrigationResponse): string {
-  const irrigation = data.irrigation;
-  switch (irrigation?.action) {
+  // The action is decided by the Go MSS. This switch only translates its code
+  // into user-facing text; it does not infer an action from measurements.
+  switch (data.irrigation?.action) {
     case "not_needed_now": return "Não irrigar agora";
     case "manual_check": return "Verificação manual recomendada";
+    case "manual_check_sensor": return "Verifique o sensor antes de decidir";
+    case "irrigation_needed": return "Irrigação necessária";
+    case "irrigate_with_caution": return "Irrigue com cautela";
     case "irrigate_on_recommended_day":
-      return irrigation.should_irrigate_today ? "Irrigação indicada para hoje" : "Planeje a irrigação";
-    default:
-      if (irrigation?.should_irrigate_today) return "Irrigação indicada para hoje";
-      if (irrigation?.should_irrigate) return "Irrigação recomendada";
-      return "Recomendação de irrigação";
+      return data.irrigation.should_irrigate_today ? "Irrigação indicada para hoje" : "Planeje a irrigação";
+    default: return "Resultado da análise recebido";
+  }
+}
+
+function recommendationIconName(action: string | undefined): IconName {
+  switch (action) {
+    case "not_needed_now": return "check";
+    case "manual_check":
+    case "manual_check_sensor": return "activity";
+    default: return "droplets";
   }
 }
 
@@ -276,8 +304,6 @@ export default function IrrigationDashboard({
   timezone = "America/Sao_Paulo",
   sensorApiBaseUrl = "https://smartfarm-tcc.chilecentral.cloudapp.azure.com",
   historyDays = 7,
-  kalmanProcessNoise = 1,
-  kalmanMeasurementNoise = 4,
 }: IrrigationDashboardProps) {
   const { width: windowWidth } = useWindowDimensions();
   const [devices, setDevices] = useState<IrrigationDevice[]>([]);
@@ -358,7 +384,16 @@ export default function IrrigationDashboard({
     // The recommendation and sensor history are independent requests. If the history
     // endpoint fails, keep the irrigation result and forecast visible in the dashboard.
     const recommendationRequest = fetchIrrigation({ apiBaseUrl, userId, devEUI: selectedEui, timezone })
-      .then((response) => setResult(response))
+      .then((response) => {
+        if (typeof __DEV__ !== "undefined" && __DEV__) {
+          console.info("[Irrigation Dashboard] chart props:", {
+            sensorHistory: response.sensor_history?.length ?? 0,
+            predictionPoints: response.soil_moisture_prediction?.points?.length ?? 0,
+            forecastDays: response.forecast_today_and_next_5_days?.length ?? 0,
+          });
+        }
+        setResult(response);
+      })
       .catch((error: unknown) => {
         setApiError(error instanceof Error ? error.message : "Não foi possível consultar a recomendação.");
       });
@@ -388,7 +423,11 @@ export default function IrrigationDashboard({
 
   return (
     <View style={styles.screen}>
+
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+        <Pressable onPress={() => router.back()} style={styles.backButton}>
+          <Text style={styles.backText}>←</Text>
+        </Pressable>
         <View style={styles.page}>
           <View style={styles.header}>
             <View style={styles.brandRow}>
@@ -512,15 +551,19 @@ export default function IrrigationDashboard({
                 <Pill label={sensor?.validity === false ? "Leitura inválida" : "Leitura recebida"} tone={sensor?.validity === false ? "amber" : "green"} />
               </View>
 
-              <View style={styles.recommendationCard}>
+              <View style={[
+                styles.recommendationCard,
+                (irrigation?.requires_manual_validation || irrigation?.action === "irrigate_with_caution") && styles.recommendationCardWarning,
+              ]}>
                 <View style={styles.recommendationTop}>
-                  <View style={styles.recommendationIcon}><AppIcon name={irrigation?.should_irrigate ? "droplets" : "check"} color={colors.white} size={20} /></View>
+                  <View style={styles.recommendationIcon}><AppIcon name={recommendationIconName(irrigation?.action)} color={colors.white} size={20} /></View>
                   <Text style={styles.recommendationEyebrow}>RECOMENDAÇÃO DO SISTEMA</Text>
                 </View>
                 <Text style={styles.recommendationTitle}>{currentRecommendation}</Text>
                 <Text style={styles.recommendationMessage}>{irrigation?.message || "A API não retornou uma mensagem explicativa para esta recomendação."}</Text>
                 <View style={styles.recommendationMetaRow}>
                   <Pill label={soilLabel(irrigation?.soil_status)} tone={soilTone(irrigation?.soil_status)} />
+                  {irrigation?.requires_manual_validation ? <Pill label="Validação manual necessária" tone="amber" /> : null}
                   {irrigation?.recommended_day ? (
                     <View style={styles.recommendedDayPill}>
                       <Text style={styles.recommendedDayLabel}>DIA SUGERIDO</Text>
@@ -533,8 +576,8 @@ export default function IrrigationDashboard({
               <View style={styles.sectionBlock}>
                 <SectionHeading title="Condições atuais" subtitle="Valores informados pelo sensor selecionado." />
                 <View style={styles.metricGrid}>
-                  <MetricCard icon="droplets" label="Umidade do solo" value={formatPercent(sensor?.soil_moisture_kalman_filtered)} detail="Estimativa filtrada por Kalman" />
-                  <MetricCard icon="activity" label="Leitura bruta" value={formatPercent(sensor?.soil_moisture_raw)} detail="Valor original do sensor" />
+                  <MetricCard icon="droplets" label="Umidade do solo" value={formatSoilScale(sensor?.soil_moisture_kalman_filtered, result.soil_moisture_prediction?.unit)} detail={soilScaleDescription(result.soil_moisture_prediction?.unit)} />
+                  <MetricCard icon="activity" label="Leitura bruta" value={formatSoilScale(sensor?.soil_moisture_raw, result.soil_moisture_prediction?.unit)} detail={soilScaleDescription(result.soil_moisture_prediction?.unit)} />
                   <MetricCard icon="thermometer" label="Temperatura do ar" value={sensor?.air_temperature_celsius == null ? "—" : `${formatNumber(sensor.air_temperature_celsius, 1)} °C`} detail="Temperatura medida" />
                   <MetricCard icon="wind" label="Umidade do ar" value={formatPercent(sensor?.air_humidity_percent)} detail="Umidade relativa" />
                 </View>
@@ -542,11 +585,12 @@ export default function IrrigationDashboard({
 
               <IrrigationTrendChart
                 history={history}
+                sensorHistory={result.sensor_history ?? []}
+                soilPrediction={result.soil_moisture_prediction}
                 forecast={forecast}
+                forecastSummary={result.forecast_summary}
                 latestSensor={sensor}
                 timezone={result.location?.timezone || timezone}
-                kalmanProcessNoise={kalmanProcessNoise}
-                kalmanMeasurementNoise={kalmanMeasurementNoise}
                 historyLoading={historyLoading}
                 historyError={historyError || undefined}
               />
@@ -609,7 +653,10 @@ export default function IrrigationDashboard({
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
-  scrollContent: { flexGrow: 1, alignItems: "center", paddingHorizontal: 16, paddingTop: 18, paddingBottom: 34 },
+  scrollContent: { flexGrow: 1,   
+    paddingHorizontal: 24,
+    paddingVertical: 20,
+    justifyContent: "space-between", },
   page: { width: "100%", maxWidth: 980 },
   header: { marginBottom: 23 },
   brandRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", marginBottom: 25 },
@@ -669,6 +716,7 @@ const styles = StyleSheet.create({
   pill: { alignSelf: "flex-start", paddingHorizontal: 10, paddingVertical: 7, borderRadius: 999 },
   pillText: { fontSize: 9, fontWeight: "800", letterSpacing: 0.1 },
   recommendationCard: { position: "relative", overflow: "hidden", backgroundColor: colors.greenDark, borderRadius: 25, padding: 22, marginBottom: 25, shadowColor: colors.greenDark, shadowOpacity: 0.18, shadowRadius: 14, shadowOffset: { width: 0, height: 6 }, elevation: 3 },
+  recommendationCardWarning: { backgroundColor: "#715A2B", shadowColor: "#715A2B" },
   recommendationTop: { flexDirection: "row", alignItems: "center", marginBottom: 15 },
   recommendationIcon: { width: 36, height: 36, borderRadius: 13, backgroundColor: "rgba(255,255,255,0.14)", alignItems: "center", justifyContent: "center", marginRight: 10 },
   recommendationIconText: { color: colors.white, fontSize: 17, fontWeight: "800" },
@@ -734,4 +782,13 @@ const styles = StyleSheet.create({
   emptyStateTitle: { color: colors.dark, fontSize: 17, fontWeight: "800", textAlign: "center", marginBottom: 7, letterSpacing: -0.25 },
   emptyStateText: { maxWidth: 440, color: colors.textSecondary, fontSize: 12, lineHeight: 19, textAlign: "center" },
   footer: { textAlign: "center", color: "#969A93", fontSize: 8, letterSpacing: 1.05, lineHeight: 14, marginTop: 5 },
+  backText: {
+      fontSize: 28,
+      color: colors.dark,
+    },
+    backButton: {
+    width: 44,
+    height: 60,
+    justifyContent: "center",
+  },
 });

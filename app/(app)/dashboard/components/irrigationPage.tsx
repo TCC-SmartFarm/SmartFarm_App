@@ -10,15 +10,17 @@ export default function IrrigationPage() {
   const userId = auth.user?.sub ?? auth.user?.id ?? null;
 
   const apiBaseUrl = process.env.EXPO_PUBLIC_IRRIGATION_API_URL ?? "http://10.33.133.15:8456";
+  const sensorApiBaseUrl = process.env.EXPO_PUBLIC_SENSOR_API_BASE_URL ?? "https://smartfarm-tcc.chilecentral.cloudapp.azure.com";
 
   return (
     <IrrigationDashboard
       userId={userId}
       supabase={supabase}
       apiBaseUrl={apiBaseUrl}
-      profileTable="users"
-      profileUserColumn="userId"
-      devicesColumn="devices"
+      sensorApiBaseUrl={sensorApiBaseUrl}
+      profileTable={process.env.EXPO_PUBLIC_IRRIGATION_PROFILE_TABLE ?? "users"}
+      profileUserColumn={process.env.EXPO_PUBLIC_IRRIGATION_PROFILE_USER_COLUMN ?? "userId"}
+      devicesColumn={process.env.EXPO_PUBLIC_IRRIGATION_DEVICES_COLUMN ?? "devices"}
       timezone="America/Sao_Paulo"
     />
   );

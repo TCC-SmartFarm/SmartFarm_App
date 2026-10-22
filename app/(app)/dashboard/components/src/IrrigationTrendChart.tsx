@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import Svg, {
   Circle,
@@ -11,7 +11,7 @@ import Svg, {
   Text as SvgText,
 } from "react-native-svg";
 import { colors } from "./colors";
-import type { ForecastDay, IrrigationSensor } from "./types";
+import type { ForecastDay, ForecastSummary, IrrigationSensor, MSSSensorHistoryPoint, SoilMoistureDiagnostics, SoilMoisturePrediction } from "./types";
 import type { SensorHistoryPoint } from "./sensorHistoryApi";
 
 const SERIES_COLORS = {
@@ -25,12 +25,16 @@ const SERIES_COLORS = {
 type ForecastMetric = "precipitation" | "probability" | "et0";
 
 interface IrrigationTrendChartProps {
+  /** Raw history fetched from the existing sensor API (used only for the blue series). */
   history: SensorHistoryPoint[];
+  /** Kalman-filtered history returned by the Go irrigation MSS. */
+  sensorHistory?: MSSSensorHistoryPoint[];
+  /** Future projection returned by the Go irrigation MSS. */
+  soilPrediction?: SoilMoisturePrediction;
   forecast: ForecastDay[];
+  forecastSummary?: ForecastSummary;
   latestSensor?: IrrigationSensor;
   timezone?: string;
-  kalmanProcessNoise?: number;
-  kalmanMeasurementNoise?: number;
   historyLoading?: boolean;
   historyError?: string;
 }
@@ -38,8 +42,11 @@ interface IrrigationTrendChartProps {
 interface PlotHistoryPoint {
   timestamp: number;
   raw: number;
+}
+
+interface PlotFilteredPoint {
+  timestamp: number;
   filtered: number;
-  serverFiltered?: number;
 }
 
 interface PlotCoordinate {
@@ -49,6 +56,7 @@ interface PlotCoordinate {
 
 interface SoilForecastPoint {
   timestamp: number;
+  hoursAhead: number;
   value: number;
   lower: number;
   upper: number;
@@ -58,20 +66,32 @@ interface SoilForecastSummary {
   current: number;
   predicted: number;
   change: number;
+  trendPerHour: number;
   lower: number;
   upper: number;
-  saturated: boolean;
-  trendLabel: string;
-  explanation: string;
+  horizonHours: number;
+  unit: string;
+  trendStatus: string;
+  confidenceStatus: string;
+  predictionIntervalWidth: number;
+  diagnostics: SoilMoistureDiagnostics;
 }
-
-const SOIL_FORECAST_HOURS = 24;
-const TREND_DAMPING_HOURS = 6;
 
 function toFiniteNumber(value: unknown): number | null {
   if (value == null || value === "") return null;
   const parsed = typeof value === "number" ? value : Number(value);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function timestampSeconds(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return value > 1e12 ? value / 1000 : value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed / 1000 : null;
+  }
+  return null;
 }
 
 function dateTimestamp(date: string): number {
@@ -95,219 +115,141 @@ function formatNumber(value: number, digits = 1): string {
   return value.toLocaleString("pt-BR", { minimumFractionDigits: 0, maximumFractionDigits: digits });
 }
 
-/** Mirrors the univariate Kalman equations documented by the Go service. */
-function applyKalman(
-  history: SensorHistoryPoint[],
-  processNoise: number,
-  measurementNoise: number,
-  latestSensor?: IrrigationSensor,
-): PlotHistoryPoint[] {
-  const sorted = history
-    .filter((point) => Number.isFinite(point.timestamp) && Number.isFinite(point.soil_moisture))
-    .map((point) => ({ timestamp: point.timestamp, raw: point.soil_moisture }))
-    .sort((a, b) => a.timestamp - b.timestamp);
-
-  const latestTimestamp = latestSensor?.timestamp ? Date.parse(latestSensor.timestamp) / 1000 : Number.NaN;
-  const latestRaw = toFiniteNumber(latestSensor?.soil_moisture_raw);
-  const latestFiltered = toFiniteNumber(latestSensor?.soil_moisture_kalman_filtered);
-  let authoritativePointIndex = -1;
-
-  if (Number.isFinite(latestTimestamp) && latestRaw !== null) {
-    let closestIndex = -1;
-    let closestDistance = Number.POSITIVE_INFINITY;
-    sorted.forEach((point, index) => {
-      const distance = Math.abs(point.timestamp - latestTimestamp);
-      if (distance < closestDistance) {
-        closestDistance = distance;
-        closestIndex = index;
-      }
-    });
-
-    if (closestIndex >= 0 && closestDistance <= 180) {
-      sorted[closestIndex] = { timestamp: latestTimestamp, raw: latestRaw };
-      sorted.sort((a, b) => a.timestamp - b.timestamp);
-      authoritativePointIndex = sorted.findIndex((point) => point.timestamp === latestTimestamp);
-    } else {
-      sorted.push({ timestamp: latestTimestamp, raw: latestRaw });
-      sorted.sort((a, b) => a.timestamp - b.timestamp);
-      authoritativePointIndex = sorted.findIndex((point) => point.timestamp === latestTimestamp);
-    }
-  }
-
-  if (sorted.length === 0) return [];
-
-  const q = Number.isFinite(processNoise) && processNoise >= 0 ? processNoise : 1;
-  const r = Number.isFinite(measurementNoise) && measurementNoise > 0 ? measurementNoise : 4;
-  let estimate = sorted[0].raw;
-  let covariance = r;
-
-  const result: PlotHistoryPoint[] = sorted.map((point, index) => {
-    if (index === 0) {
-      estimate = point.raw;
-    } else {
-      const predictedCovariance = covariance + q;
-      const gain = predictedCovariance / (predictedCovariance + r);
-      estimate = estimate + gain * (point.raw - estimate);
-      covariance = (1 - gain) * predictedCovariance;
-    }
-    return { timestamp: point.timestamp, raw: point.raw, filtered: estimate };
-  });
-
-  // The backend is authoritative for the current filtered value.
-  if (authoritativePointIndex >= 0 && latestFiltered !== null) {
-    result[authoritativePointIndex].serverFiltered = latestFiltered;
-    result[authoritativePointIndex].filtered = latestFiltered;
-  }
-
-  return result;
-}
-
-/**
- * Trend-aware 2-state Kalman model for short-term soil-moisture projection.
- * State = [moisture level, moisture slope in percentage-points/hour].
- * The slope is damped over time so a short sensor fluctuation is not
- * extrapolated linearly for an entire day. The current level is anchored to
- * the scalar value returned by the Go API; the trend is inferred from history.
+/** Builds the raw blue series from the separate 7-day sensor-history endpoint.
+ * The latest raw value supplied by the MSS is authoritative and replaces a
+ * nearby duplicate, but no filtering or prediction is performed here.
  */
-function forecastSoilMoisture(
-  history: PlotHistoryPoint[],
-  processNoise: number,
-  measurementNoise: number,
-  authoritativeCurrent?: number | null,
-  horizonHours = SOIL_FORECAST_HOURS,
-): SoilForecastPoint[] {
-  const data = history
-    .filter((point) => Number.isFinite(point.timestamp) && Number.isFinite(point.raw))
-    .slice()
+function normalizeRawHistory(history: SensorHistoryPoint[], latestSensor?: IrrigationSensor, serverHistory: MSSSensorHistoryPoint[] = []): PlotHistoryPoint[] {
+  const byTimestamp = new Map<number, number>();
+  for (const point of history) {
+    if (!Number.isFinite(point.timestamp) || !Number.isFinite(point.soil_moisture)) continue;
+    byTimestamp.set(point.timestamp, point.soil_moisture);
+  }
+
+  // The Go response includes canonical timestamps and raw values for all the
+  // observations it accepted; merge those in to handle timestamp adjustments
+  // performed by the MSS and eliminate duplicate samples.
+  for (const point of serverHistory) {
+    const timestamp = timestampSeconds(point.timestamp);
+    const value = toFiniteNumber(point.soil_moisture_raw);
+    if (timestamp !== null && value !== null) byTimestamp.set(timestamp, value);
+  }
+
+  const latestTimestamp = timestampSeconds(latestSensor?.timestamp);
+  const latestRaw = toFiniteNumber(latestSensor?.soil_moisture_raw);
+  if (latestTimestamp !== null && latestRaw !== null) {
+    let closest: number | null = null;
+    let distance = Number.POSITIVE_INFINITY;
+    for (const timestamp of byTimestamp.keys()) {
+      const currentDistance = Math.abs(timestamp - latestTimestamp);
+      if (currentDistance < distance) {
+        distance = currentDistance;
+        closest = timestamp;
+      }
+    }
+    if (closest !== null && distance <= 180) byTimestamp.delete(closest);
+    byTimestamp.set(latestTimestamp, latestRaw);
+  }
+
+  return Array.from(byTimestamp.entries())
+    .map(([timestamp, raw]) => ({ timestamp, raw }))
     .sort((a, b) => a.timestamp - b.timestamp);
-  if (!data.length) return [];
-
-  const q = Number.isFinite(processNoise) && processNoise >= 0 ? processNoise : 1;
-  const r = Number.isFinite(measurementNoise) && measurementNoise > 0 ? measurementNoise : 4;
-
-  let level = data[0].raw;
-  let slope = 0;
-  let p00 = r;
-  let p01 = 0;
-  let p10 = 0;
-  let p11 = 4; // Initial uncertainty in the slope (percentage-points/hour).
-  let previousTimestamp = data[0].timestamp;
-
-  const predictState = (dtHours: number) => {
-    const dt = Math.max(1 / 3600, Math.min(24, dtHours));
-    const decay = Math.exp(-dt / TREND_DAMPING_HOURS);
-    const trendIntegral = TREND_DAMPING_HOURS * (1 - decay);
-    const predictedLevel = level + trendIntegral * slope;
-    const predictedSlope = decay * slope;
-
-    // Covariance propagation for F=[[1,a],[0,phi]], plus process noise.
-    const qLevel = q * dt;
-    const qSlope = q * 0.01 * dt;
-    const nextP00 = p00 + trendIntegral * (p01 + p10) + trendIntegral * trendIntegral * p11 + qLevel;
-    const nextP01 = decay * (p01 + trendIntegral * p11);
-    const nextP10 = decay * (p10 + trendIntegral * p11);
-    const nextP11 = decay * decay * p11 + qSlope;
-    return { dt, decay, trendIntegral, predictedLevel, predictedSlope, p00: nextP00, p01: nextP01, p10: nextP10, p11: nextP11 };
-  };
-
-  for (let index = 1; index < data.length; index += 1) {
-    const point = data[index];
-    const dtHours = (point.timestamp - previousTimestamp) / 3600;
-    if (!Number.isFinite(dtHours) || dtHours <= 0) continue;
-
-    const predicted = predictState(dtHours);
-    const innovation = point.raw - predicted.predictedLevel;
-    const innovationVariance = predicted.p00 + r;
-    const k0 = predicted.p00 / innovationVariance;
-    const k1 = predicted.p10 / innovationVariance;
-
-    level = predicted.predictedLevel + k0 * innovation;
-    slope = predicted.predictedSlope + k1 * innovation;
-
-    p00 = Math.max(1e-6, (1 - k0) * predicted.p00);
-    p01 = (1 - k0) * predicted.p01;
-    p10 = predicted.p10 - k1 * predicted.p00;
-    p11 = Math.max(1e-6, predicted.p11 - k1 * predicted.p01);
-    // Numerical symmetry keeps the 2x2 covariance stable.
-    const cross = (p01 + p10) / 2;
-    p01 = cross;
-    p10 = cross;
-    previousTimestamp = point.timestamp;
-  }
-
-  const currentTimestamp = data[data.length - 1].timestamp;
-  const currentLevel = typeof authoritativeCurrent === "number" && Number.isFinite(authoritativeCurrent)
-    ? authoritativeCurrent
-    : level;
-  level = currentLevel;
-
-  const currentSigma = Math.sqrt(Math.max(0, p00));
-  const output: SoilForecastPoint[] = [{
-    timestamp: currentTimestamp,
-    value: clampMoisture(currentLevel),
-    lower: clampMoisture(currentLevel - 1.96 * currentSigma),
-    upper: clampMoisture(currentLevel + 1.96 * currentSigma),
-  }];
-
-  for (let hour = 1; hour <= horizonHours; hour += 1) {
-    const predicted = predictState(1);
-    level = predicted.predictedLevel;
-    slope = predicted.predictedSlope;
-    p00 = Math.max(1e-6, predicted.p00);
-    p01 = predicted.p01;
-    p10 = predicted.p10;
-    p11 = Math.max(1e-6, predicted.p11);
-    const sigma = Math.sqrt(p00);
-    output.push({
-      timestamp: currentTimestamp + hour * 3600,
-      value: clampMoisture(level),
-      lower: clampMoisture(level - 1.96 * sigma),
-      upper: clampMoisture(level + 1.96 * sigma),
-    });
-  }
-  return output;
 }
 
-function clampMoisture(value: number): number {
-  return Math.max(0, Math.min(100, value));
+/** Uses the filtered series from Go without re-running Kalman in React Native. */
+function normalizeFilteredHistory(history: MSSSensorHistoryPoint[] = []): PlotFilteredPoint[] {
+  const byTimestamp = new Map<number, number>();
+  for (const point of history) {
+    const timestamp = timestampSeconds(point.timestamp);
+    const value = toFiniteNumber(point.soil_moisture_kalman_filtered);
+    if (timestamp !== null && value !== null) byTimestamp.set(timestamp, value);
+  }
+
+  return Array.from(byTimestamp.entries())
+    .map(([timestamp, filtered]) => ({ timestamp, filtered }))
+    .sort((a, b) => a.timestamp - b.timestamp);
 }
 
+/** Maps the MSS response projection for rendering only. */
+function normalizePrediction(prediction?: SoilMoisturePrediction): SoilForecastPoint[] {
+  if (!prediction || !Array.isArray(prediction.points)) return [];
+  return prediction.points
+    .map((point) => {
+      const timestamp = timestampSeconds(point.timestamp);
+      const value = toFiniteNumber(point.soil_moisture_predicted);
+      const lower = toFiniteNumber(point.lower_bound);
+      const upper = toFiniteNumber(point.upper_bound);
+      const hoursAhead = toFiniteNumber(point.hours_ahead);
+      if (timestamp === null || value === null || lower === null || upper === null || hoursAhead === null) return null;
+      return { timestamp, value, lower, upper, hoursAhead };
+    })
+    .filter((point): point is SoilForecastPoint => point !== null)
+    .sort((a, b) => a.timestamp - b.timestamp);
+}
+
+/** Reads summary values and diagnostics produced by the Go MSS. No soil state,
+ * trend, sensor condition, confidence level, or prediction is inferred here.
+ */
 function summarizeSoilForecast(
-  history: PlotHistoryPoint[],
-  forecast: SoilForecastPoint[],
+  prediction: SoilMoisturePrediction | undefined,
+  forecastPoints: SoilForecastPoint[],
 ): SoilForecastSummary | null {
-  if (!history.length || forecast.length < 2) return null;
-  const currentPoint = forecast[0];
-  const predictedPoint = forecast[forecast.length - 1];
-  const recent = history.slice(-Math.min(12, history.length));
-  const saturatedCount = recent.filter((point) => point.raw >= 99.5).length;
-  const saturated = currentPoint.value >= 99.5 && recent.length >= 3 && saturatedCount / recent.length >= 0.7;
-  const change = predictedPoint.value - currentPoint.value;
-
-  let trendLabel = "Tendência estável";
-  if (change <= -1.5) trendLabel = "Tendência de queda";
-  else if (change >= 1.5) trendLabel = "Tendência de alta";
-  if (saturated) trendLabel = "Sensor no limite superior";
-
-  let explanation = `Projeção de tendência para as próximas ${SOIL_FORECAST_HOURS} horas, com incerteza crescente ao longo do horizonte.`;
-  if (saturated) {
-    explanation = "As leituras recentes estão próximas de 100%. Como o sensor não registra uma queda mensurável, a projeção permanece no limite superior e não estima quando o solo começará a secar.";
-  } else if (history.length < 4) {
-    explanation = "Há poucas leituras para identificar uma tendência confiável. A projeção deve ser tratada como preliminar.";
-  } else if (Math.abs(change) < 1.5) {
-    explanation = "O histórico recente não apresenta uma tendência consistente de alta ou queda; o modelo projeta estabilidade no curto prazo.";
-  }
-
+  if (!prediction || forecastPoints.length < 2) return null;
+  const finalPoint = forecastPoints[forecastPoints.length - 1];
   return {
-    current: currentPoint.value,
-    predicted: predictedPoint.value,
-    change,
-    lower: predictedPoint.lower,
-    upper: predictedPoint.upper,
-    saturated,
-    trendLabel,
-    explanation,
+    current: prediction.current_filtered,
+    predicted: prediction.predicted_at_horizon,
+    change: prediction.change_from_current,
+    trendPerHour: prediction.trend_per_hour,
+    lower: finalPoint.lower,
+    upper: finalPoint.upper,
+    horizonHours: prediction.horizon_hours,
+    unit: prediction.unit,
+    trendStatus: prediction.trend_status,
+    confidenceStatus: prediction.confidence_status,
+    predictionIntervalWidth: prediction.prediction_interval_width,
+    diagnostics: prediction.diagnostics,
   };
+}
+
+function trendStatusLabel(status: string): string {
+  switch (status) {
+    case "increasing": return "Tendência de alta";
+    case "decreasing": return "Tendência de queda";
+    case "stable": return "Tendência estável";
+    default: return status;
+  }
+}
+
+function confidenceStatusLabel(status: string): string {
+  switch (status) {
+    case "high_uncertainty": return "Incerteza elevada";
+    case "within_threshold": return "Incerteza dentro do limite";
+    case "unavailable": return "Incerteza indisponível";
+    default: return status;
+  }
+}
+
+function isPercentageUnit(unit: string): boolean {
+  return unit === "%" || unit.toLowerCase() === "percent" || unit.toLowerCase() === "percentage";
+}
+
+function formatSoilValue(value: number, unit: string): string {
+  return `${formatNumber(value, 1)}${isPercentageUnit(unit) ? "%" : ""}`;
+}
+
+function formatSoilChange(value: number, unit: string): string {
+  const sign = value > 0 ? "+" : "";
+  return `${sign}${formatNumber(value, 1)} ${isPercentageUnit(unit) ? "p.p." : "unid."}`;
+}
+
+function formatSoilTrendRate(value: number, unit: string): string {
+  const sign = value > 0 ? "+" : "";
+  return `${sign}${formatNumber(value, 2)} ${isPercentageUnit(unit) ? "p.p./h" : "unid./h"}`;
+}
+
+function soilScaleLabel(unit: string): string {
+  return isPercentageUnit(unit) ? "Umidade do solo (%)" : "Escala do sensor";
 }
 
 function makeBandPath(upper: PlotCoordinate[], lower: PlotCoordinate[]): string {
@@ -373,48 +315,56 @@ const FORECAST_OPTIONS: { key: ForecastMetric; label: string; detail: string; gl
 
 export default function IrrigationTrendChart({
   history,
+  sensorHistory = [],
+  soilPrediction,
   forecast,
+  forecastSummary,
   latestSensor,
   timezone = "America/Sao_Paulo",
-  kalmanProcessNoise = 1,
-  kalmanMeasurementNoise = 4,
   historyLoading = false,
   historyError,
 }: IrrigationTrendChartProps) {
   const [containerWidth, setContainerWidth] = useState(0);
   const [forecastMetric, setForecastMetric] = useState<ForecastMetric>("precipitation");
+
+  useEffect(() => {
+    if (forecastMetric === "et0" && forecastSummary?.et0_available !== true) {
+      setForecastMetric("precipitation");
+    }
+  }, [forecastMetric, forecastSummary?.et0_available]);
+
+  // Raw history is fetched from the existing 7-day sensor endpoint. All filtering
+  // and prediction values come from the Go irrigation MSS response.
   const plotHistory = useMemo(
-    () => applyKalman(history, kalmanProcessNoise, kalmanMeasurementNoise, latestSensor),
-    [history, kalmanProcessNoise, kalmanMeasurementNoise, latestSensor],
+    () => normalizeRawHistory(history, latestSensor, sensorHistory),
+    [history, latestSensor, sensorHistory],
+  );
+  const plotFiltered = useMemo(
+    () => normalizeFilteredHistory(sensorHistory),
+    [sensorHistory],
   );
   const plotForecast = useMemo(
     () => forecast
       .map((day) => ({
         ...day,
         timestamp: dateTimestamp(day.date),
-        precipitation: toFiniteNumber(day.precipitation_mm) ?? 0,
+        precipitation: toFiniteNumber(day.precipitation_mm),
+        probability: toFiniteNumber(day.precipitation_probability_percent),
+        et0: toFiniteNumber(day.et0_mm),
       }))
       .filter((day) => Number.isFinite(day.timestamp))
       .sort((a, b) => a.timestamp - b.timestamp),
     [forecast],
   );
-  const soilForecast = useMemo(() => {
-    const last = plotHistory[plotHistory.length - 1];
-    return forecastSoilMoisture(
-      plotHistory,
-      kalmanProcessNoise,
-      kalmanMeasurementNoise,
-      last?.filtered ?? null,
-      SOIL_FORECAST_HOURS,
-    );
-  }, [plotHistory, kalmanProcessNoise, kalmanMeasurementNoise]);
+  const soilForecast = useMemo(() => normalizePrediction(soilPrediction), [soilPrediction]);
   const soilForecastSummary = useMemo(
-    () => summarizeSoilForecast(plotHistory, soilForecast),
-    [plotHistory, soilForecast],
+    () => summarizeSoilForecast(soilPrediction, soilForecast),
+    [soilPrediction, soilForecast],
   );
 
   const allTimes = [
     ...plotHistory.map((point) => point.timestamp * 1000),
+    ...plotFiltered.map((point) => point.timestamp * 1000),
     ...plotForecast.map((point) => point.timestamp),
     ...soilForecast.map((point) => point.timestamp * 1000),
   ];
@@ -431,16 +381,25 @@ export default function IrrigationTrendChart({
 
   const maxRaw = Math.max(
     100,
-    ...plotHistory.map((point) => Math.max(point.raw, point.filtered)),
+    ...plotHistory.map((point) => point.raw),
+    ...plotFiltered.map((point) => point.filtered),
     ...soilForecast.map((point) => point.upper),
   );
   const soilMax = Math.max(100, Math.ceil(maxRaw / 25) * 25);
-  const selectedForecastValue = (day: (typeof plotForecast)[number]) => {
-    if (forecastMetric === "probability") return toFiniteNumber(day.precipitation_probability_percent) ?? 0;
-    if (forecastMetric === "et0") return toFiniteNumber(day.et0_mm) ?? 0;
+  const selectedForecastValue = (day: (typeof plotForecast)[number]): number | null => {
+    if (forecastMetric === "probability") return day.probability;
+    if (forecastMetric === "et0") {
+      // Go's v3 summary states whether ET₀ was supplied. A zero daily value can
+      // be omitted by the current Go `omitempty` tag, so treat that omission as
+      // zero only when the server confirms ET₀ availability for this window.
+      return day.et0 ?? (forecastSummary?.et0_available === true ? 0 : null);
+    }
     return day.precipitation;
   };
-  const maxForecastValue = Math.max(1, ...plotForecast.map(selectedForecastValue));
+  const availableForecastValues = plotForecast
+    .map(selectedForecastValue)
+    .filter((value): value is number => value !== null && Number.isFinite(value));
+  const maxForecastValue = Math.max(1, ...availableForecastValues);
   const forecastAxisMax = forecastMetric === "probability"
     ? 100
     : forecastMetric === "precipitation"
@@ -456,20 +415,24 @@ export default function IrrigationTrendChart({
   const forecastAxisLabel = forecastMetric === "probability" ? "Probabilidade (%)" : forecastMetric === "et0" ? "ET₀ (mm)" : "Chuva (mm)";
   const yFractions = [0, 0.5, 1];
   const rawCoordinates = plotHistory.map((point) => ({ x: xFor(point.timestamp * 1000), y: ySoil(point.raw) }));
-  const filteredCoordinates = plotHistory.map((point) => ({ x: xFor(point.timestamp * 1000), y: ySoil(point.filtered) }));
+  const filteredCoordinates = plotFiltered.map((point) => ({ x: xFor(point.timestamp * 1000), y: ySoil(point.filtered) }));
   const rawPath = smoothPath(rawCoordinates);
   const filteredPath = smoothPath(filteredCoordinates);
-  const filteredAreaPath = makeAreaPath(filteredCoordinates, margin.top + plotHeight);
+  const filteredAreaPath = filteredCoordinates.length > 1 ? makeAreaPath(filteredCoordinates, margin.top + plotHeight) : "";
   const soilForecastCoordinates = soilForecast.map((point) => ({ x: xFor(point.timestamp * 1000), y: ySoil(point.value) }));
   const soilForecastUpperCoordinates = soilForecast.map((point) => ({ x: xFor(point.timestamp * 1000), y: ySoil(point.upper) }));
   const soilForecastLowerCoordinates = soilForecast.map((point) => ({ x: xFor(point.timestamp * 1000), y: ySoil(point.lower) }));
   const soilForecastPath = smoothPath(soilForecastCoordinates);
-  const soilForecastBandPath = makeBandPath(soilForecastUpperCoordinates, soilForecastLowerCoordinates);
+  const soilForecastBandPath = soilForecast.length > 1 ? makeBandPath(soilForecastUpperCoordinates, soilForecastLowerCoordinates) : "";
 
-  const accumulatedRain = plotForecast.reduce((sum, day) => sum + Math.max(0, day.precipitation), 0);
+  const totalPrecipitation = forecastSummary?.total_precipitation_mm ?? null;
+  const daysWithLikelyRain = forecastSummary?.days_with_likely_rain ?? null;
+  const totalET0 = forecastSummary?.et0_available ? forecastSummary.total_et0_mm ?? null : null;
   const validReadings = plotHistory.length;
-  const lastPoint = plotHistory[plotHistory.length - 1];
-  const forecastDays = plotForecast.length;
+  const lastRawPoint = plotHistory[plotHistory.length - 1];
+  const lastFilteredPoint = plotFiltered[plotFiltered.length - 1];
+  const projectionMissing = !soilPrediction || soilForecast.length < 2;
+  const filteredHistoryMissing = sensorHistory.length === 0;
   const ticks = Math.max(3, Math.min(containerWidth > 520 ? 5 : 4, 5));
 
   return (
@@ -487,8 +450,8 @@ export default function IrrigationTrendChart({
 
       <View style={styles.legend}>
         <LegendItem color={SERIES_COLORS.raw} label="Leitura bruta" />
-        <LegendItem color={SERIES_COLORS.kalman} label="Kalman histórico" />
-        <LegendItem color={SERIES_COLORS.kalman} label="Projeção 24h" kind="dashed" />
+        <LegendItem color={SERIES_COLORS.kalman} label="Kalman histórico · Go" />
+        <LegendItem color={SERIES_COLORS.kalman} label={`Projeção ${soilPrediction?.horizon_hours ?? "—"}h · Go`} kind="dashed" />
         <LegendItem color={SERIES_COLORS.rain} label={forecastMetricLabel} kind="bar" />
       </View>
 
@@ -510,14 +473,16 @@ export default function IrrigationTrendChart({
               <Pressable
                 key={option.key}
                 onPress={() => setForecastMetric(option.key)}
+                disabled={option.key === "et0" && forecastSummary?.et0_available !== true}
                 accessibilityRole="button"
                 accessibilityLabel={`Mostrar ${option.label} no gráfico`}
                 accessibilityHint="Alterna a variável meteorológica exibida no gráfico"
                 accessibilityState={{ selected }}
                 hitSlop={3}
-                style={({ pressed }) => [
+                style={({ pressed }: { pressed: boolean }) => [
                   styles.metricOption,
                   selected && styles.metricOptionSelected,
+                  option.key === "et0" && forecastSummary?.et0_available !== true && styles.metricOptionDisabled,
                   pressed && styles.metricOptionPressed,
                 ]}
               >
@@ -525,8 +490,8 @@ export default function IrrigationTrendChart({
                   <Text style={[styles.metricGlyphText, selected && styles.metricGlyphTextSelected]}>{option.glyph}</Text>
                 </View>
                 <View style={styles.metricOptionCopy}>
-                  <Text style={[styles.metricOptionTitle, selected && styles.metricOptionTitleSelected]}>{option.label}</Text>
-                  <Text style={[styles.metricOptionDetail, selected && styles.metricOptionDetailSelected]}>{option.detail}</Text>
+                  <Text style={[styles.metricOptionTitle, selected && styles.metricOptionTitleSelected, option.key === "et0" && forecastSummary?.et0_available !== true && styles.metricOptionTextDisabled]}>{option.label}</Text>
+                  <Text style={[styles.metricOptionDetail, selected && styles.metricOptionDetailSelected, option.key === "et0" && forecastSummary?.et0_available !== true && styles.metricOptionTextDisabled]}>{option.key === "et0" && forecastSummary?.et0_available !== true ? "não disponível" : option.detail}</Text>
                 </View>
                 <View style={[styles.selectionIndicator, selected && styles.selectionIndicatorSelected]}>
                   {selected ? <Text style={styles.selectionCheck}>✓</Text> : null}
@@ -540,7 +505,7 @@ export default function IrrigationTrendChart({
       <View style={styles.chartLabelsRow}>
         <View style={styles.chartLabelGroup}>
           <View style={[styles.chartLabelDot, { backgroundColor: SERIES_COLORS.kalman }]} />
-          <Text style={styles.chartLabelText}>Umidade do solo (%)</Text>
+          <Text style={styles.chartLabelText}>{soilScaleLabel(soilPrediction?.unit ?? "sensor_scale")}</Text>
         </View>
         <View style={[styles.chartLabelGroup, styles.chartLabelRight]}>
           <View style={[styles.chartLabelDot, { backgroundColor: SERIES_COLORS.rain }]} />
@@ -549,7 +514,7 @@ export default function IrrigationTrendChart({
       </View>
 
       <View
-        onLayout={(event) => {
+        onLayout={(event: { nativeEvent: { layout: { width: number } } }) => {
           const width = event.nativeEvent.layout.width;
           if (width > 0 && Math.abs(width - containerWidth) > 1) setContainerWidth(width);
         }}
@@ -578,9 +543,10 @@ export default function IrrigationTrendChart({
             })}
 
             {plotForecast.map((day) => {
+              const metricValue = selectedForecastValue(day);
+              if (metricValue === null || !Number.isFinite(metricValue)) return null;
               const x = xFor(day.timestamp);
               const barWidth = Math.max(7, Math.min(16, (86400000 * plotWidth / timeSpan) * 0.48));
-              const metricValue = selectedForecastValue(day);
               const y = yForecast(metricValue);
               const baseline = margin.top + plotHeight;
               const height = Math.max(2, baseline - y);
@@ -602,23 +568,18 @@ export default function IrrigationTrendChart({
               <Path d={soilForecastBandPath} fill={SERIES_COLORS.kalman} opacity={0.10} />
             ) : null}
 
-            {plotHistory.length > 1 ? (
-              <>
-                <Path d={filteredAreaPath} fill="url(#kalmanFill)" />
-                <Path d={rawPath} fill="none" stroke={SERIES_COLORS.raw} strokeWidth={2.1} strokeOpacity={0.82} strokeLinecap="round" strokeLinejoin="round" />
-                <Path d={filteredPath} fill="none" stroke={SERIES_COLORS.kalman} strokeWidth={3.1} strokeLinecap="round" strokeLinejoin="round" />
-                {lastPoint ? (
-                  <>
-                    <Circle cx={xFor(lastPoint.timestamp * 1000)} cy={ySoil(lastPoint.raw)} r={4} fill={colors.white} stroke={SERIES_COLORS.raw} strokeWidth={2} />
-                    <Circle cx={xFor(lastPoint.timestamp * 1000)} cy={ySoil(lastPoint.filtered)} r={4.5} fill={colors.white} stroke={SERIES_COLORS.kalman} strokeWidth={2.4} />
-                  </>
-                ) : null}
-              </>
-            ) : plotHistory.length === 1 ? (
-              <>
-                <Circle cx={rawCoordinates[0].x} cy={rawCoordinates[0].y} r={4} fill={colors.white} stroke={SERIES_COLORS.raw} strokeWidth={2} />
-                <Circle cx={filteredCoordinates[0].x} cy={filteredCoordinates[0].y} r={4.5} fill={colors.white} stroke={SERIES_COLORS.kalman} strokeWidth={2.4} />
-              </>
+            {filteredAreaPath ? <Path d={filteredAreaPath} fill="url(#kalmanFill)" /> : null}
+            {rawCoordinates.length > 1 ? (
+              <Path d={rawPath} fill="none" stroke={SERIES_COLORS.raw} strokeWidth={2.1} strokeOpacity={0.82} strokeLinecap="round" strokeLinejoin="round" />
+            ) : null}
+            {filteredCoordinates.length > 1 ? (
+              <Path d={filteredPath} fill="none" stroke={SERIES_COLORS.kalman} strokeWidth={3.1} strokeLinecap="round" strokeLinejoin="round" />
+            ) : null}
+            {lastRawPoint ? (
+              <Circle cx={xFor(lastRawPoint.timestamp * 1000)} cy={ySoil(lastRawPoint.raw)} r={4} fill={colors.white} stroke={SERIES_COLORS.raw} strokeWidth={2} />
+            ) : null}
+            {lastFilteredPoint ? (
+              <Circle cx={xFor(lastFilteredPoint.timestamp * 1000)} cy={ySoil(lastFilteredPoint.filtered)} r={4.5} fill={colors.white} stroke={SERIES_COLORS.kalman} strokeWidth={2.4} />
             ) : null}
 
             {soilForecastCoordinates.length > 1 ? (
@@ -650,6 +611,16 @@ export default function IrrigationTrendChart({
                   stroke={SERIES_COLORS.kalman}
                   strokeWidth={2.5}
                 />
+                <SvgText
+                  x={soilForecastCoordinates[soilForecastCoordinates.length - 1].x - 5}
+                  y={Math.max(margin.top + 12, soilForecastCoordinates[soilForecastCoordinates.length - 1].y - 9)}
+                  fill={SERIES_COLORS.kalman}
+                  fontSize={10}
+                  fontWeight="700"
+                  textAnchor="end"
+                >
+                  {formatNumber(soilForecast[soilForecast.length - 1].value, 1)}%
+                </SvgText>
               </>
             ) : null}
 
@@ -677,57 +648,102 @@ export default function IrrigationTrendChart({
           <View style={styles.projectionTopRow}>
             <View style={styles.projectionHeadingBlock}>
               <Text style={styles.projectionEyebrow}>ESTIMATIVA DE UMIDADE</Text>
-              <Text style={styles.projectionTitle}>Próximas 24 horas</Text>
+              <Text style={styles.projectionTitle}>Próximas {soilForecastSummary.horizonHours} horas</Text>
             </View>
-            <View style={[styles.projectionTrendBadge, soilForecastSummary.saturated && styles.projectionTrendBadgeWarning]}>
-              <Text style={[styles.projectionTrendText, soilForecastSummary.saturated && styles.projectionTrendTextWarning]}>
-                {soilForecastSummary.trendLabel}
-              </Text>
+            <View style={styles.projectionBadges}>
+              <View style={[styles.projectionTrendBadge, (soilForecastSummary.diagnostics.persistent_zero || soilForecastSummary.diagnostics.sensor_saturated) && styles.projectionTrendBadgeWarning]}>
+                <Text style={[styles.projectionTrendText, (soilForecastSummary.diagnostics.persistent_zero || soilForecastSummary.diagnostics.sensor_saturated) && styles.projectionTrendTextWarning]}>
+                  {trendStatusLabel(soilForecastSummary.trendStatus)}
+                </Text>
+              </View>
+              <View style={[styles.projectionConfidenceBadge, soilForecastSummary.confidenceStatus === "high_uncertainty" && styles.projectionTrendBadgeWarning]}>
+                <Text style={[styles.projectionConfidenceText, soilForecastSummary.confidenceStatus === "high_uncertainty" && styles.projectionTrendTextWarning]}>
+                  {confidenceStatusLabel(soilForecastSummary.confidenceStatus)}
+                </Text>
+              </View>
             </View>
           </View>
+          <Text style={styles.projectionCurrentLabel}>Base filtrada atual pelo MSS: {formatSoilValue(soilForecastSummary.current, soilForecastSummary.unit)}</Text>
+          <Text style={styles.projectionCurrentLabel}>Tendência por hora informada pelo MSS: {formatSoilTrendRate(soilForecastSummary.trendPerHour, soilForecastSummary.unit)}</Text>
           <View style={styles.projectionValueRow}>
-            <Text style={styles.projectionValue}>{formatNumber(soilForecastSummary.predicted, 1)}%</Text>
+            <Text style={styles.projectionValue}>{formatSoilValue(soilForecastSummary.predicted, soilForecastSummary.unit)}</Text>
             <View style={styles.projectionDeltaBlock}>
-              <Text style={[styles.projectionDelta, soilForecastSummary.change < -0.1 ? styles.projectionDeltaDown : soilForecastSummary.change > 0.1 ? styles.projectionDeltaUp : null]}>
-                {soilForecastSummary.change > 0.1 ? "+" : ""}{formatNumber(soilForecastSummary.change, 1)} p.p.
+              <Text style={[styles.projectionDelta, soilForecastSummary.change < 0 ? styles.projectionDeltaDown : soilForecastSummary.change > 0 ? styles.projectionDeltaUp : null]}>
+                {formatSoilChange(soilForecastSummary.change, soilForecastSummary.unit)}
               </Text>
               <Text style={styles.projectionDeltaCaption}>variação estimada</Text>
             </View>
           </View>
           <View style={styles.projectionRangeRow}>
             <Text style={styles.projectionRangeLabel}>Faixa estimada ao final do período</Text>
-            <Text style={styles.projectionRangeValue}>{formatNumber(soilForecastSummary.lower, 1)}–{formatNumber(soilForecastSummary.upper, 1)}%</Text>
+            <Text style={styles.projectionRangeValue}>{formatSoilValue(soilForecastSummary.lower, soilForecastSummary.unit)}–{formatSoilValue(soilForecastSummary.upper, soilForecastSummary.unit)}</Text>
           </View>
-          <View style={styles.projectionRangeTrack}>
-            <View style={[styles.projectionRangeFill, { left: `${soilForecastSummary.lower}%`, width: `${Math.max(1, soilForecastSummary.upper - soilForecastSummary.lower)}%` }]} />
-            <View style={[styles.projectionRangeMarker, { left: `${soilForecastSummary.predicted}%` }]} />
-          </View>
-          <Text style={styles.projectionExplanation}>{soilForecastSummary.explanation}</Text>
+          {isPercentageUnit(soilForecastSummary.unit) ? (
+            <View style={styles.projectionRangeTrack}>
+              <View style={[styles.projectionRangeFill, { left: `${soilForecastSummary.lower}%`, width: `${Math.max(1, soilForecastSummary.upper - soilForecastSummary.lower)}%` }]} />
+              <View style={[styles.projectionRangeMarker, { left: `${soilForecastSummary.predicted}%` }]} />
+            </View>
+          ) : null}
+          <Text style={styles.projectionRangeLabel}>Largura do intervalo segundo o MSS: {formatSoilValue(soilForecastSummary.predictionIntervalWidth, soilForecastSummary.unit)}</Text>
+          {soilForecastSummary.diagnostics.messages.length > 0 ? (
+            <View style={styles.diagnosticMessages}>
+              {soilForecastSummary.diagnostics.messages.map((message, index) => (
+                <Text key={`${index}-${message}`} style={styles.projectionExplanation}>• {message}</Text>
+              ))}
+            </View>
+          ) : (
+            <Text style={styles.projectionExplanation}>O MSS não retornou mensagens de diagnóstico para esta projeção.</Text>
+          )}
         </View>
       ) : null}
 
+      <View style={styles.dataStatusRow}>
+        <View style={styles.dataStatusChip}>
+          <View style={[styles.dataStatusDot, { backgroundColor: SERIES_COLORS.kalman }]} />
+          <Text style={styles.dataStatusText}>MSS: {sensorHistory.length} leituras históricas</Text>
+        </View>
+        <View style={styles.dataStatusChip}>
+          <View style={[styles.dataStatusDot, { backgroundColor: SERIES_COLORS.kalman }]} />
+          <Text style={styles.dataStatusText}>Go: {soilForecast.length} pontos projetados</Text>
+        </View>
+      </View>
+
       <View style={styles.chartFooterNote}>
         <View style={styles.footerIndicator} />
-        <Text style={styles.chartFooterText}>A linha vermelha contínua mostra o nível filtrado. A linha tracejada projeta a tendência de curto prazo; a faixa rosa representa a incerteza do modelo, não uma garantia.</Text>
+        <Text style={styles.chartFooterText}>O filtro e a projeção são calculados pelo microsserviço Go. O app apenas exibe a série histórica, os pontos futuros e a faixa de incerteza retornados pela API.</Text>
       </View>
 
       {historyLoading ? (
         <View style={styles.infoBox}><Text style={styles.infoText}>Carregando as leituras anteriores do sensor…</Text></View>
       ) : historyError ? (
         <View style={styles.warningBox}>
-          <Text style={styles.warningTitle}>Histórico temporariamente indisponível</Text>
-          <Text style={styles.warningText}>{historyError} A recomendação e a previsão continuam disponíveis quando recebidas pela API.</Text>
+          <Text style={styles.warningTitle}>Histórico bruto temporariamente indisponível</Text>
+          <Text style={styles.warningText}>{historyError} O filtro e a projeção continuam vindo do microsserviço Go, quando presentes na resposta.</Text>
+        </View>
+      ) : null}
+
+      {!historyLoading && filteredHistoryMissing ? (
+        <View style={styles.warningBox}>
+          <Text style={styles.warningTitle}>Histórico filtrado indisponível</Text>
+          <Text style={styles.warningText}>O campo sensor_history não contém pontos válidos no contrato v3. Confira se o endpoint implantado corresponde à versão atual do Irrigacao-MSS e consulte os logs [Irrigation MSS v3].</Text>
+        </View>
+      ) : null}
+      {!historyLoading && projectionMissing ? (
+        <View style={styles.warningBox}>
+          <Text style={styles.warningTitle}>Projeção v3 indisponível ou incompleta</Text>
+          <Text style={styles.warningText}>O MSS precisa retornar soil_moisture_prediction com metadados, diagnostics e pelo menos dois pontos válidos. O aplicativo não preenche metadados ausentes nem calcula uma projeção local.</Text>
         </View>
       ) : null}
 
       <View style={styles.summaryGrid}>
-        <SummaryMetric label="PONTOS NO HISTÓRICO" value={String(validReadings)} caption="Leituras exibidas" />
-        <SummaryMetric label="CHUVA PREVISTA" value={`${formatNumber(accumulatedRain, 1)} mm`} caption={`Próximos ${forecastDays} dias`} />
-        <SummaryMetric label="UMIDADE FILTRADA" value={lastPoint ? `${formatNumber(lastPoint.filtered, 1)}%` : "—"} caption="Última estimativa" />
+        <SummaryMetric label="PONTOS NO GRÁFICO" value={String(validReadings)} caption="Leituras brutas exibidas" />
+        <SummaryMetric label="CHUVA ACUMULADA" value={totalPrecipitation == null ? "—" : `${formatNumber(totalPrecipitation, 1)} mm`} caption={forecastSummary ? `Resumo Go · ${forecastSummary.days} dias` : "Resumo não recebido do MSS"} />
+        <SummaryMetric label="DIAS COM CHUVA PROVÁVEL" value={daysWithLikelyRain == null ? "—" : String(daysWithLikelyRain)} caption="Contagem calculada no Go" />
+        <SummaryMetric label="ET₀ ACUMULADA" value={totalET0 == null ? "—" : `${formatNumber(totalET0, 1)} mm`} caption={forecastSummary?.et0_available ? "Resumo calculado no Go" : "ET₀ indisponível no MSS"} />
       </View>
 
       <Text style={styles.footnote}>
-        Q={formatNumber(kalmanProcessNoise, 2)} e R={formatNumber(kalmanMeasurementNoise, 2)} são os parâmetros-base do filtro histórico e da projeção; a projeção usa um modelo temporal de nível + tendência.
+        O MSS em Go realiza a filtragem e a projeção temporal. Este componente não aplica Kalman nem estima valores futuros no dispositivo.
       </Text>
     </View>
   );
@@ -793,6 +809,8 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   metricOptionPressed: { opacity: 0.82, transform: [{ scale: 0.98 }] },
+  metricOptionDisabled: { opacity: 0.48, backgroundColor: "#F5F5F0" },
+  metricOptionTextDisabled: { color: "#8D9288" },
   metricGlyph: { width: 27, height: 27, borderRadius: 9, alignItems: "center", justifyContent: "center", backgroundColor: "#F0F3EB", marginRight: 6 },
   metricGlyphSelected: { backgroundColor: "rgba(255,255,255,0.16)" },
   metricGlyphText: { color: colors.greenDark, fontSize: 13, fontWeight: "900" },
@@ -818,13 +836,18 @@ const styles = StyleSheet.create({
   projectionCard: { backgroundColor: "#FFF8F7", borderColor: "#F4DEDD", borderWidth: 1, borderRadius: 18, padding: 14, marginTop: 11, marginBottom: 4 },
   projectionTopRow: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 8 },
   projectionHeadingBlock: { flex: 1 },
+  projectionBadges: { alignItems: "flex-end", gap: 5, maxWidth: "60%" },
   projectionEyebrow: { color: SERIES_COLORS.kalman, fontSize: 9, fontWeight: "900", letterSpacing: 1.1, marginBottom: 4 },
   projectionTitle: { color: colors.dark, fontSize: 15, fontWeight: "800", letterSpacing: -0.25 },
   projectionTrendBadge: { backgroundColor: "#FBE8E6", borderRadius: 999, paddingHorizontal: 9, paddingVertical: 6, maxWidth: "58%" },
   projectionTrendBadgeWarning: { backgroundColor: "#FFF0D8" },
   projectionTrendText: { color: "#A33F43", fontSize: 9, fontWeight: "800", textAlign: "center" },
   projectionTrendTextWarning: { color: "#835A1C" },
-  projectionValueRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 12, marginBottom: 12 },
+  projectionConfidenceBadge: { backgroundColor: "#EEF1EA", borderRadius: 999, paddingHorizontal: 9, paddingVertical: 6, maxWidth: "100%" },
+  projectionConfidenceText: { color: colors.greenDark, fontSize: 9, fontWeight: "800", textAlign: "center" },
+  diagnosticMessages: { gap: 5 },
+  projectionCurrentLabel: { color: colors.textSecondary, fontSize: 10, lineHeight: 15, marginTop: 12 },
+  projectionValueRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 8, marginBottom: 12 },
   projectionValue: { color: colors.dark, fontSize: 30, fontWeight: "900", letterSpacing: -1.3 },
   projectionDeltaBlock: { alignItems: "flex-end" },
   projectionDelta: { color: colors.textSecondary, fontSize: 14, fontWeight: "800" },
@@ -838,6 +861,10 @@ const styles = StyleSheet.create({
   projectionRangeFill: { position: "absolute", top: 0, bottom: 0, backgroundColor: "#D94B50", opacity: 0.42, borderRadius: 999 },
   projectionRangeMarker: { position: "absolute", top: -2, width: 3, height: 10, marginLeft: -1.5, backgroundColor: "#A93037", borderRadius: 2 },
   projectionExplanation: { color: "#6C6563", fontSize: 10, lineHeight: 15 },
+  dataStatusRow: { flexDirection: "row", flexWrap: "wrap", gap: 7, marginTop: 8, marginBottom: 3 },
+  dataStatusChip: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: "#F6F7F2", borderWidth: 1, borderColor: "#E8EBE2", borderRadius: 999, paddingHorizontal: 10, paddingVertical: 7 },
+  dataStatusDot: { width: 6, height: 6, borderRadius: 3 },
+  dataStatusText: { color: colors.textSecondary, fontSize: 9, fontWeight: "700" },
   chartFooterNote: { flexDirection: "row", alignItems: "flex-start", gap: 8, marginTop: 10, marginBottom: 15, paddingHorizontal: 2 },
   footerIndicator: { width: 6, height: 6, borderRadius: 3, backgroundColor: SERIES_COLORS.kalman, marginTop: 5 },
   chartFooterText: { color: colors.textSecondary, fontSize: 10, lineHeight: 15, flex: 1 },
