@@ -85,14 +85,12 @@ export async function fetchIrrigation({
   if (!base) throw new Error("Configure a URL base para a API de irrigação.");
 
   const query = new URLSearchParams({ userId, devEUI, timezone });
-  console.log(`[URL]: ${base}/api/v1/irrigation?${query.toString()}`)
   const url = `${base}/api/v1/irrigation?${query.toString()}`;
 
   let response: Response;
   try {
     response = await fetch(url, { method: "GET", headers: { Accept: "application/json" } });
   } catch {
-    console.log( "Não foi possível conectar à API. Confira o endereço configurado, se o serviço está ativo e se o dispositivo consegue alcançá-lo.")
     throw new Error(
       "Não foi possível conectar à API. Confira o endereço configurado, se o serviço está ativo e se o dispositivo consegue alcançá-lo."
     );
